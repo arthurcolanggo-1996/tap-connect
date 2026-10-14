@@ -1,9 +1,14 @@
 import type { NextConfig } from "next";
 
+// CAP_BUILD=1 makes a static export for the Android app (see README).
+const forApp = process.env.CAP_BUILD === "1";
+
 const nextConfig: NextConfig = {
+  ...(forApp ? { output: "export" as const, trailingSlash: true, images: { unoptimized: true } } : {}),
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {
+    if (forApp) return [];
     return [
       {
         source: "/:path*",

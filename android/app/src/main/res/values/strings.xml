@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Tap Connect</string>
+    <string name="title_activity_main">Tap Connect</string>
+    <string name="package_name">com.tapconnect.app</string>
+    <string name="custom_url_scheme">com.tapconnect.app</string>
+</resources>

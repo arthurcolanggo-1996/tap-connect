@@ -7,6 +7,7 @@ import { ConfirmModal } from "@/components/ConfirmModal";
 import { useLocalStore } from "@/hooks/useLocalStore";
 import { getNfcCapability, nfcErrorMessage, writeLinkToNfc, type NfcCapability } from "@/lib/nfc";
 import { FIELD_KEYS, FIELD_LABELS, type FieldKey } from "@/lib/types";
+import { isNativeApp, nativeNfc, PUBLIC_ORIGIN, type NativeNfcStatus } from "@/lib/native-nfc";
 import { encodeShareLink } from "@/lib/share";
 import { selectFields, sharedFieldCount, toVCard } from "@/lib/vcard";
 import { displayNameFrom } from "@/lib/validation";
@@ -21,6 +22,9 @@ export default function SharePage() {
   const [confirmWrite, setConfirmWrite] = useState(false);
   const [nfc, setNfc] = useState<NfcCapability>({ supported: false, secureContext: false });
   const abortRef = useRef<AbortController | null>(null);
+  const stopNativeRef = useRef<(() => Promise<void>) | null>(null);
+  const [native, setNative] = useState(false);
+  const [nativeStatus, setNativeStatus] = useState<NativeNfcStatus | null>(null);
 
   const selected = useMemo(() => selectFields(profile, prefs), [profile, prefs]);
   const vcard = useMemo(() => toVCard(selected), [selected]);
@@ -30,10 +34,59 @@ export default function SharePage() {
   const named = Boolean(profile.firstName || profile.lastName);
 
   useEffect(() => {
-    setNfc(getNfcCapability());
-    setOrigin(window.location.origin);
-    return () => abortRef.current?.abort();
+    if (isNativeApp()) {
+      setNative(true);
+      setOrigin(PUBLIC_ORIGIN);
+      void nativeNfc.status().then(setNativeStatus).catch(() => undefined);
+    } else {
+      setNfc(getNfcCapability());
+      setOrigin(window.location.origin);
+    }
+    return () => {
+      abortRef.current?.abort();
+      void stopNativeRef.current?.();
+    };
   }, []);
+
+  async function stopNative() {
+    const stop = stopNativeRef.current;
+    stopNativeRef.current = null;
+    await stop?.();
+    setBusy(false);
+  }
+
+  async function startNativeSend() {
+    setConfirmWrite(false);
+    const current = await nativeNfc.status().catch(() => null);
+    if (current) setNativeStatus(current);
+    if (!current?.supported) {
+      setStatus({ kind: "err", text: "This phone has no NFC. Use the QR code instead." });
+      return;
+    }
+    if (!current.enabled) {
+      setStatus({ kind: "err", text: "NFC is off. Turn it on in settings, then try again." });
+      return;
+    }
+    if (!current.canSend) {
+      setStatus({ kind: "err", text: "This phone can’t send over NFC. Use the QR code instead." });
+      return;
+    }
+    try {
+      await stopNative();
+      stopNativeRef.current = await nativeNfc.startSharing(link, () => {
+        navigator.vibrate?.(20);
+        setStatus({ kind: "ok", text: "Sent. The other phone has your card." });
+        void stopNative();
+      });
+      setBusy(true);
+      setStatus({
+        kind: "warn",
+        text: "Hold the backs of both phones together. Keep this screen on and unlocked.",
+      });
+    } catch {
+      setStatus({ kind: "err", text: "Couldn’t start NFC. Check that NFC is on and try again." });
+    }
+  }
 
   function toggle(key: FieldKey) {
     updatePrefs({ ...prefs, [key]: !prefs[key] });
@@ -115,11 +168,20 @@ export default function SharePage() {
           {count} field{count === 1 ? "" : "s"} selected
         </h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          Show the QR code below. The other person scans it with their camera and your card opens in
-          their browser. They don’t need the app.
+          {native
+            ? "Tap Tap to send, then hold the backs of both phones together. The other phone doesn’t need the app. It gets a prompt to open your card."
+            : "Show the QR code below. The other person scans it with their camera and your card opens in their browser. They don’t need the app."}
         </p>
-        {!nfc.supported && nfc.reason ? <p className="status warn">{nfc.reason}</p> : null}
-        {!nfc.supported && nfc.openInChromeUrl ? (
+        {native && nativeStatus && !nativeStatus.enabled ? (
+          <p className="status warn">
+            NFC is off.{" "}
+            <button className="btn btn-ghost" type="button" onClick={() => void nativeNfc.openSettings()}>
+              Open NFC settings
+            </button>
+          </p>
+        ) : null}
+        {!native && !nfc.supported && nfc.reason ? <p className="status warn">{nfc.reason}</p> : null}
+        {!native && !nfc.supported && nfc.openInChromeUrl ? (
           <a className="btn btn-secondary" href={nfc.openInChromeUrl} style={{ marginTop: 8 }}>
             Open in Chrome
           </a>
@@ -131,6 +193,10 @@ export default function SharePage() {
             type="button"
             disabled={!named || count === 0 || busy}
             onClick={() => {
+              if (native) {
+                void startNativeSend();
+                return;
+              }
               if (!nfc.supported) {
                 setShowQr(true);
                 return;
@@ -138,13 +204,22 @@ export default function SharePage() {
               setConfirmWrite(true);
             }}
           >
-            {busy ? "Waiting for tag…" : nfc.supported ? "Write to NFC tag" : "Show QR code"}
+            {busy
+              ? "Waiting for tap…"
+              : native
+                ? "Tap to send"
+                : nfc.supported
+                  ? "Write to NFC tag"
+                  : "Show QR code"}
           </button>
           {busy ? (
             <button
               className="btn btn-secondary"
               type="button"
-              onClick={() => abortRef.current?.abort()}
+              onClick={() => {
+                abortRef.current?.abort();
+                void stopNative();
+              }}
             >
               Cancel tap
             </button>

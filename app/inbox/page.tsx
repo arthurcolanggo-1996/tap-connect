@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { useLocalStore } from "@/hooks/useLocalStore";
+import { isNativeApp, nativeNfc } from "@/lib/native-nfc";
 import { getNfcCapability, nfcErrorMessage, scanNfc } from "@/lib/nfc";
 import { newId } from "@/lib/storage";
 import { FIELD_LABELS, type FieldKey, type ReceivedCard } from "@/lib/types";
@@ -23,8 +24,13 @@ export default function InboxPage() {
   const [pendingClear, setPendingClear] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  const stopNativeRef = useRef<(() => Promise<void>) | null>(null);
+
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      void stopNativeRef.current?.();
+    };
   }, []);
 
   function addCard(vcard: string, source: ReceivedCard["source"]) {
@@ -42,7 +48,34 @@ export default function InboxPage() {
     navigator.vibrate?.(15);
   }
 
+  async function startNativeListen() {
+    const current = await nativeNfc.status().catch(() => null);
+    if (!current?.supported) {
+      setStatus("This phone has no NFC. You can still import a .vcf or open a shared link.");
+      return;
+    }
+    if (!current.enabled) {
+      setStatus("NFC is off. Turn it on in settings, then try again.");
+      void nativeNfc.openSettings();
+      return;
+    }
+    try {
+      stopNativeRef.current = await nativeNfc.startReading(
+        (vcard) => {
+          addCard(vcard, "nfc");
+          setStatus("Contact received.");
+        },
+        (message) => setStatus(message),
+      );
+      setListening(true);
+      setStatus("Ready. Hold the back of the other phone against this one.");
+    } catch {
+      setStatus("Couldn’t start NFC. Check that NFC is on and try again.");
+    }
+  }
+
   async function startListen() {
+    if (isNativeApp()) return startNativeListen();
     const nfc = getNfcCapability();
     if (!nfc.supported) {
       setStatus(`${nfc.reason ?? "NFC isn’t available."} You can still import a .vcf or open a shared link.`);
@@ -70,6 +103,9 @@ export default function InboxPage() {
 
   function stopListen() {
     abortRef.current?.abort();
+    const stop = stopNativeRef.current;
+    stopNativeRef.current = null;
+    void stop?.();
     setListening(false);
     setStatus("");
   }
@@ -133,7 +169,7 @@ export default function InboxPage() {
           type="button"
           onClick={() => (listening ? stopListen() : void startListen())}
         >
-          {listening ? "Stop listening" : "Read NFC tag"}
+          {listening ? "Stop listening" : "Receive by NFC"}
         </button>
         <label className="btn btn-secondary" style={{ cursor: "pointer" }}>
           Import .vcf
@@ -156,7 +192,7 @@ export default function InboxPage() {
           <p className="hero-name" style={{ fontSize: 22 }}>
             Nothing received yet
           </p>
-          <p className="muted">Cards open from a QR code or link show a Save button. Or tap Read NFC tag and hold a tag to this phone.</p>
+          <p className="muted">Cards open from a QR code or link show a Save button. In the Android app, tap Receive by NFC and hold the other phone to this one.</p>
         </div>
       ) : (
         <div className="group">
