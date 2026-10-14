@@ -50,10 +50,11 @@ export function payloadFromNdef(event: NDEFReadingEvent): string | null {
 export async function writeVCardToNfc(vcard: string, signal?: AbortSignal): Promise<void> {
   if (!window.NDEFReader) throw new Error("NFC is not available on this device.");
   const reader = new window.NDEFReader();
+  const bytes = new TextEncoder().encode(vcard);
   await reader.write(
     {
       records: [
-        { recordType: "mime", mediaType: "text/vcard", data: vcard },
+        { recordType: "mime", mediaType: "text/vcard", data: bytes },
         { recordType: "text", data: vcard },
       ],
     },
