@@ -5,8 +5,9 @@ import Link from "next/link";
 import { QrCanvas } from "@/components/QrCanvas";
 import { ConfirmModal } from "@/components/ConfirmModal";
 import { useLocalStore } from "@/hooks/useLocalStore";
-import { getNfcCapability, nfcErrorMessage, writeVCardToNfc, type NfcCapability } from "@/lib/nfc";
+import { getNfcCapability, nfcErrorMessage, writeLinkToNfc, type NfcCapability } from "@/lib/nfc";
 import { FIELD_KEYS, FIELD_LABELS, type FieldKey } from "@/lib/types";
+import { encodeShareLink } from "@/lib/share";
 import { selectFields, sharedFieldCount, toVCard } from "@/lib/vcard";
 import { displayNameFrom } from "@/lib/validation";
 
@@ -16,18 +17,21 @@ export default function SharePage() {
   const { ready, profile, prefs, updatePrefs } = useLocalStore();
   const [status, setStatus] = useState<Status>(null);
   const [busy, setBusy] = useState(false);
-  const [showQr, setShowQr] = useState(false);
+  const [showQr, setShowQr] = useState(true);
   const [confirmWrite, setConfirmWrite] = useState(false);
   const [nfc, setNfc] = useState<NfcCapability>({ supported: false, secureContext: false });
   const abortRef = useRef<AbortController | null>(null);
 
   const selected = useMemo(() => selectFields(profile, prefs), [profile, prefs]);
   const vcard = useMemo(() => toVCard(selected), [selected]);
+  const [origin, setOrigin] = useState("");
+  const link = useMemo(() => (origin ? encodeShareLink(selected, origin) : ""), [selected, origin]);
   const count = sharedFieldCount(profile, prefs);
   const named = Boolean(profile.firstName || profile.lastName);
 
   useEffect(() => {
     setNfc(getNfcCapability());
+    setOrigin(window.location.origin);
     return () => abortRef.current?.abort();
   }, []);
 
@@ -41,11 +45,11 @@ export default function SharePage() {
     const controller = new AbortController();
     abortRef.current = controller;
     setBusy(true);
-    setStatus({ kind: "warn", text: "Hold this phone to the other phone or an NFC tag…" });
+    setStatus({ kind: "warn", text: "Hold the back of this phone against the NFC tag…" });
     try {
-      await writeVCardToNfc(vcard, controller.signal);
+      await writeLinkToNfc(link, controller.signal);
       navigator.vibrate?.(20);
-      setStatus({ kind: "ok", text: "Contact sent. They can save the card from the tap." });
+      setStatus({ kind: "ok", text: "Written. Anyone who taps this tag opens your card." });
     } catch (error) {
       setStatus({ kind: "err", text: nfcErrorMessage(error) });
     } finally {
@@ -60,14 +64,14 @@ export default function SharePage() {
     });
     try {
       if (navigator.share) {
-        const payload: ShareData = { title: displayNameFrom(selected), text: vcard };
+        const payload: ShareData = { title: displayNameFrom(selected), text: "My contact card", url: link };
         if (navigator.canShare?.({ files: [file] })) payload.files = [file];
         await navigator.share(payload);
         setStatus({ kind: "ok", text: "Opened the system share sheet." });
         return;
       }
-      await navigator.clipboard.writeText(vcard);
-      setStatus({ kind: "ok", text: "Copied a vCard. Paste it or AirDrop it instead." });
+      await navigator.clipboard.writeText(link);
+      setStatus({ kind: "ok", text: "Link copied. Paste it into a message." });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
       setStatus({ kind: "err", text: "Couldn’t open share. Try QR instead." });
@@ -90,7 +94,7 @@ export default function SharePage() {
       <header className="page-header">
         <div>
           <p className="kicker">Share</p>
-          <h1>Tap to send</h1>
+          <h1>Share your card</h1>
         </div>
       </header>
 
@@ -111,10 +115,15 @@ export default function SharePage() {
           {count} field{count === 1 ? "" : "s"} selected
         </h2>
         <p className="muted" style={{ marginTop: 0 }}>
-          {nfc.supported
-            ? "Bring the phones together. The other phone should be ready to receive."
-            : nfc.reason}
+          Show the QR code below. The other person scans it with their camera and your card opens in
+          their browser. They don’t need the app.
         </p>
+        {!nfc.supported && nfc.reason ? <p className="status warn">{nfc.reason}</p> : null}
+        {!nfc.supported && nfc.openInChromeUrl ? (
+          <a className="btn btn-secondary" href={nfc.openInChromeUrl} style={{ marginTop: 8 }}>
+            Open in Chrome
+          </a>
+        ) : null}
         {status ? <p className={`status ${status.kind}`}>{status.text}</p> : null}
         <div className="stack" style={{ marginTop: 16 }}>
           <button
@@ -124,13 +133,12 @@ export default function SharePage() {
             onClick={() => {
               if (!nfc.supported) {
                 setShowQr(true);
-                setStatus({ kind: "warn", text: "NFC isn’t available here. Show a QR code instead." });
                 return;
               }
               setConfirmWrite(true);
             }}
           >
-            {busy ? "Waiting for tap…" : nfc.supported ? "Start NFC tap" : "Show QR instead"}
+            {busy ? "Waiting for tag…" : nfc.supported ? "Write to NFC tag" : "Show QR code"}
           </button>
           {busy ? (
             <button
@@ -145,7 +153,7 @@ export default function SharePage() {
       </div>
 
       <p className="muted" style={{ marginBottom: 8 }}>
-        Only toggled fields are written to NFC, QR, or the share sheet.
+        Only toggled fields go into the QR code, NFC tag, or link.
       </p>
       <div className="group" style={{ marginBottom: 16 }}>
         {FIELD_KEYS.map((key) => (
@@ -172,7 +180,7 @@ export default function SharePage() {
           {showQr ? "Hide QR" : "Show QR"}
         </button>
         <button className="btn btn-secondary" type="button" onClick={() => void systemShare()} disabled={!named || count === 0}>
-          System share
+          Share link
         </button>
       </div>
       <button
@@ -185,19 +193,19 @@ export default function SharePage() {
         Download .vcf
       </button>
 
-      {showQr && named && count > 0 ? (
+      {showQr && named && count > 0 && link ? (
         <div className="card" style={{ marginTop: 12 }}>
-          <QrCanvas value={vcard} />
+          <QrCanvas value={link} />
           <p className="muted" style={{ textAlign: "center", padding: "0 16px 16px" }}>
-            The other phone can scan this if NFC isn’t available — typical on iPhone Safari.
+            Works with any phone camera. No app or NFC needed.
           </p>
         </div>
       ) : null}
 
       <ConfirmModal
         open={confirmWrite}
-        title="Write this card over NFC?"
-        body="Hold this phone to the other device or an NFC tag. If you write a tag, the previous tag contents will be replaced."
+        title="Write your card to an NFC tag?"
+        body="Hold this phone against a blank or rewritable NFC tag. The tag’s old contents will be replaced. Anyone who taps the tag opens your card in their browser."
         confirmLabel="Hold to share"
         onCancel={() => setConfirmWrite(false)}
         onConfirm={() => void startWrite()}

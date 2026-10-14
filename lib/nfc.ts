@@ -1,30 +1,66 @@
+import { decodeShareLink } from "./share";
+import { toVCard } from "./vcard";
+
 export type NfcCapability = {
   supported: boolean;
   secureContext: boolean;
   reason?: string;
+  // Set when the user could fix things by switching to Chrome.
+  openInChromeUrl?: string;
 };
+
+function chromeIntentUrl(): string {
+  const { host, pathname, search, hash } = window.location;
+  return `intent://${host}${pathname}${search}${hash}#Intent;scheme=https;package=com.android.chrome;end`;
+}
 
 export function getNfcCapability(): NfcCapability {
   if (typeof window === "undefined") {
     return { supported: false, secureContext: false, reason: "NFC is only available on a phone." };
   }
   const secureContext = window.isSecureContext;
-  const supported = typeof window.NDEFReader === "function";
-  if (!supported) {
+  if (typeof window.NDEFReader === "function") {
+    if (!secureContext) {
+      return { supported: false, secureContext, reason: "NFC needs a secure (https) page." };
+    }
+    return { supported: true, secureContext };
+  }
+
+  const ua = navigator.userAgent;
+  const android = /Android/i.test(ua);
+  const inApp = /; wv\)|FBAN|FBAV|Instagram|Line\/|Messenger|Snapchat|TikTok|WhatsApp|Telegram/i.test(ua);
+  const notChrome = /SamsungBrowser|Firefox|OPR\/|Opera|EdgA|DuckDuckGo|MiuiBrowser|UCBrowser/i.test(ua);
+
+  if (/iPhone|iPad|iPod/i.test(ua)) {
     return {
       supported: false,
       secureContext,
-      reason: "Web NFC is available in Chrome on Android. Use QR or system share on this device.",
+      reason: "iPhones can’t use NFC from a web app. Use the QR code or share link.",
     };
   }
-  if (!secureContext) {
+  if (android && (inApp || notChrome)) {
     return {
       supported: false,
       secureContext,
-      reason: "NFC requires HTTPS (or localhost).",
+      reason: inApp
+        ? "This in-app browser blocks NFC. Open the link in Chrome."
+        : "This browser doesn’t support NFC. Open the app in Chrome.",
+      openInChromeUrl: chromeIntentUrl(),
     };
   }
-  return { supported: true, secureContext };
+  if (android) {
+    return {
+      supported: false,
+      secureContext,
+      reason: "NFC isn’t available in this browser. Update Chrome, or use the QR code or share link.",
+      openInChromeUrl: chromeIntentUrl(),
+    };
+  }
+  return {
+    supported: false,
+    secureContext,
+    reason: "NFC works in Chrome on Android. Use the QR code or share link here.",
+  };
 }
 
 function decodeRecord(data?: DataView, encoding = "utf-8"): string {
@@ -40,26 +76,21 @@ export function payloadFromNdef(event: NDEFReadingEvent): string | null {
   for (const record of event.message.records) {
     const body = decodeRecord(record.data, record.encoding);
     if (!body) continue;
-    if (record.mediaType === "text/vcard" || record.mediaType === "text/x-vcard") return body;
-    if (record.recordType === "text" && body.includes("BEGIN:VCARD")) return body;
     if (body.includes("BEGIN:VCARD")) return body;
+    if (record.recordType === "url" || record.recordType === "absolute-url" || body.includes("/receive#")) {
+      const fields = decodeShareLink(body);
+      if (fields) return toVCard(fields);
+    }
   }
   return null;
 }
 
-export async function writeVCardToNfc(vcard: string, signal?: AbortSignal): Promise<void> {
+// Writes a link, not raw contact data. Any phone that taps the tag opens the
+// link in its browser, so the receiver does not need the app.
+export async function writeLinkToNfc(link: string, signal?: AbortSignal): Promise<void> {
   if (!window.NDEFReader) throw new Error("NFC is not available on this device.");
   const reader = new window.NDEFReader();
-  const bytes = new TextEncoder().encode(vcard);
-  await reader.write(
-    {
-      records: [
-        { recordType: "mime", mediaType: "text/vcard", data: bytes },
-        { recordType: "text", data: vcard },
-      ],
-    },
-    { signal },
-  );
+  await reader.write({ records: [{ recordType: "url", data: link }] }, { signal });
 }
 
 export async function scanNfc(
@@ -85,10 +116,24 @@ export async function scanNfc(
 
 export function nfcErrorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "Something went wrong with NFC.";
-  if (error.name === "AbortError") return "Tap cancelled.";
-  if (error.name === "NotAllowedError") return "NFC permission was denied.";
-  if (error.name === "NotSupportedError") return "NFC is not supported on this device.";
-  if (error.name === "NotReadableError") return "The tag couldn’t be read. Hold still and try again.";
-  if (error.name === "NetworkError") return "The connection dropped. Keep the phones together.";
-  return error.message || "Something went wrong with NFC.";
+  switch (error.name) {
+    case "AbortError":
+      return "Cancelled.";
+    case "NotAllowedError":
+      return "NFC is blocked. Turn NFC on in phone settings, and allow NFC for this site in Chrome (lock icon > Permissions).";
+    case "NotSupportedError":
+      return "NFC is off or not supported on this phone. Turn it on in settings.";
+    case "NotReadableError":
+      return "Couldn’t read that. Hold the phone still against the tag and try again.";
+    case "NetworkError":
+      return "The tag moved away too soon. Hold it steady and try again.";
+    case "InvalidStateError":
+      return "NFC is busy. Close other NFC apps and try again.";
+    case "SecurityError":
+      return "NFC needs this page to be open directly in Chrome, not inside another app or frame.";
+    case "TypeError":
+      return "Couldn’t write this card. Share fewer fields, or use the QR code.";
+    default:
+      return error.message || "Something went wrong with NFC.";
+  }
 }

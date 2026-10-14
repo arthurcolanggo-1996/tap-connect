@@ -19,7 +19,7 @@ export type ReceivedCard = {
   id: string;
   receivedAt: string;
   displayName: string;
-  source: "nfc" | "import" | "manual";
+  source: "nfc" | "import" | "link" | "manual";
   fields: Partial<Profile>;
   vcard: string;
 };

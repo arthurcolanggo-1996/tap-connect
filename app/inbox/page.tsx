@@ -45,14 +45,14 @@ export default function InboxPage() {
   async function startListen() {
     const nfc = getNfcCapability();
     if (!nfc.supported) {
-      setStatus(nfc.reason ?? "NFC isn’t available.");
+      setStatus(`${nfc.reason ?? "NFC isn’t available."} You can still import a .vcf or open a shared link.`);
       return;
     }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setListening(true);
-    setStatus("Ready to receive. Hold the other phone here.");
+    setStatus("Ready. Hold the NFC tag against the back of this phone.");
     try {
       await scanNfc(
         (payload) => {
@@ -133,7 +133,7 @@ export default function InboxPage() {
           type="button"
           onClick={() => (listening ? stopListen() : void startListen())}
         >
-          {listening ? "Stop listening" : "Receive NFC tap"}
+          {listening ? "Stop listening" : "Read NFC tag"}
         </button>
         <label className="btn btn-secondary" style={{ cursor: "pointer" }}>
           Import .vcf
@@ -156,7 +156,7 @@ export default function InboxPage() {
           <p className="hero-name" style={{ fontSize: 22 }}>
             Nothing received yet
           </p>
-          <p className="muted">Tap Receive, then hold another phone or tag to this device.</p>
+          <p className="muted">Cards open from a QR code or link show a Save button. Or tap Read NFC tag and hold a tag to this phone.</p>
         </div>
       ) : (
         <div className="group">
